@@ -203,7 +203,7 @@ dbGetQuery(con_patient_db,
 
 ```{r}
 dbGetQuery(con_patient_db, 
-           'Select distinct(patient_num)
+           'Select encounter_num
             From observation_fact
             Where concept_cd = 99214')
 ```
