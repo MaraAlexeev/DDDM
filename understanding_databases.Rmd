@@ -83,7 +83,10 @@ Thinking about the tables in the star schema, the first obvious table and its co
 
 ```{r pt_dim}
 
-patient_dimension <- data %>% select(person_id, gender) %>% distinct(person_id, .keep_all = TRUE) %>% rename(c(patient_num = person_id, sex_cd = gender))
+patient_dimension <- data %>% 
+  select(person_id, gender) %>% 
+  distinct(person_id, .keep_all = TRUE) %>% 
+  rename(c(patient_num = person_id, sex_cd = gender))
 
 DT::datatable(patient_dimension)
 ```
@@ -100,7 +103,7 @@ provider_dimension <- data %>%
 DT::datatable(provider_dimension)
 ```
 
-Next up is the like the concept dimension. From my reading it seems like CPT and Diagnosis are actually both what should be in the concept_cd. 
+Next up is the like the concept dimension. From my reading it seems like CPT and Diagnosis are actually both what should be in the concept_cd. So will create a table with all of the CPT and diagnosis codes in it. Don't have descriptions of diagnosis codes like I do for CPT codes.
 
 ```{r concept_dim}
 
@@ -123,7 +126,7 @@ DT::datatable(concept_dimension)
 ```
 
 
-Understanding what qualifies as a observation fact is harder than I expected. Looking at the data it seems logical to focus first on the concept_cd which seems like the best fit is from the diagnosis column AND the CPT column. I think I might need to link that information via the instance_num. In the sample data there is nothing that fits well with encounter number, so I am thinking I might have to generate that to help organize the data. 
+Understanding what qualifies as a observation fact is harder than I expected. In the sample data there is nothing that fits well with encounter number, so I am thinking I might have to generate from multiple columns to help organize the data. Looking at the data it seems logical to focus first on the concept_cd which seems like the best fit is from the diagnosis column AND the CPT column. I think I might need to link that information via the instance_num when I make the data longer. 
 
 My thoughts are bit jumbled at how one might create a encounter number that is meaningful from this data. From looking at the i2b2 wiki it seems that an encounter number can span over dates (eg an inpatient stay over several days), so you could have one encounter number with multiple rows (beyond for just a complicated measurement like standing blood pressure)
 
@@ -136,8 +139,6 @@ encounter_exploration <- data %>%
   mutate(instance_num = 1:n()) %>% 
   ungroup() 
   
-# encounter_exploration <- data %>% group_by(person_id, admit_date_time) %>% summarise(count = n()) %>% arrange(desc(person_id)) %>% DT::datatable()
-
 encounter_exploration %>% 
   DT::datatable()
 ```
@@ -155,7 +156,6 @@ Now I believe I can create the observation_fact table.
 encounter_creation$cpt_code <- as.character(encounter_creation$cpt_code)
 
 observation_fact <- encounter_creation %>% 
-  # replace_na(dx1, "Unknown") %>% 
   pivot_longer(cols = c(dx1, cpt_code), values_to = "concept_cd") %>% 
   select(person_id, encounter_num, concept_cd, provider_key, qcc_charge_date_of_service, instance_num) %>% 
   rename(c(start_date = qcc_charge_date_of_service, patient_num = person_id, provider_id = provider_key)) 
@@ -173,6 +173,8 @@ visit_dimension <- encounter_creation %>%
   group_by(encounter_num) %>% 
   select(encounter_num, admit_date_time, discharge_date_t_ime, inout) %>% 
   distinct()
+
+DT::datatable(visit_dimension)
 ```
 
 Looking at the data, it doesn't seem like I would need a modifier table with this sample data. 
@@ -207,3 +209,28 @@ dbGetQuery(con_patient_db,
             FROM observation_fact
             WHERE concept_cd = 99214')
 ```
+```{r}
+dbGetQuery(con_patient_db, 
+           'SELECT count(encounter_num)
+            FROM observation_fact
+            WHERE concept_cd = 99214')
+```
+
+
+```{r}
+dbGetQuery(con_patient_db, 
+           'SELECT name_char
+            FROM provider_dimension
+            JOIN observation_fact ON provider_dimension.provider_id = observation_fact.provider_id
+            WHERE observation_fact.concept_cd = 99214')
+```
+
+
+```{r}
+dbDisconnect(con_patient_db)
+```
+
+```{r}
+sessionInfo()
+```
+
