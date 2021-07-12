@@ -1,0 +1,209 @@
+---
+title: "Map Data to a DB Scheme"
+author: "Mara Alexeev"
+date: "7/9/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Understanding Databases
+
+## Map data to a db schema 
+
+**Explanation of assignment**
+
+This exercise will take you into the world of database design (at a high-conceptual level) and how you’d take data from a source and ETL it into a database target.  Based on the i2b2 documentation and your connection to the i2b2 database, propose how you would at a conceptual level get the attached data (“sample data.xlxs”) into the i2b2 data model.
+
+•	Goal of the Assignment – the goal for this assignment is to start to familiarize you with the idea of taking a transactional application and using it as the basis for a reporting infrastructure.
+
+•	Work Product – the output of the assignment will be a conceptual set of diagrams and accompanying SQL* which would take the data and put it into the relevant tables of i2b2.
+
+•	Tools and Resources: use the CRIT team (Mohamd Daniar and Nandan Patibandla) as a resource.  You also may need to look at the broader i2b2 documentation: http://www.i2b2.org (https://community.i2b2.org/wiki/display/BUN/2.+Quick+Start+Guide)
+
+```{r libraries, include= FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(RSQLite)
+library(datamodelr)
+library(yaml)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+library(readxl)
+library(prettydoc)
+library(DT)
+library(magrittr)
+```
+
+
+# Prep Database
+
+Here is a recreation of the i2b2 database star schema. 
+
+```{r database_set_up}
+example_db <- dm_read_yaml("./example_db.yml")
+example_db_graph <- dm_create_graph(example_db, rankdir = "BT")
+example_db_layout <- dm_render_graph(example_db_graph)
+example_db_layout
+```
+
+# Working with sample data
+
+Import the data. 
+
+```{r data_import}
+
+data <- readxl::read_excel("./data/dddm_sample_data.xlsx", 
+    col_types = c("numeric", "text", "date", 
+        "numeric", "text", "date", "date", 
+        "date", "numeric", "text", "text"))
+
+data %<>% janitor::clean_names() 
+```
+
+Viewable data.
+```{r raw_data}
+
+DT::datatable(data)
+
+```
+
+
+Examine the column names.
+
+```{r columns}
+DT::datatable(as_tibble(names(data)), options = list(pageLength = 11))
+```
+
+# Pulling it apart
+
+Thinking about the tables in the star schema, the first obvious table and its contents that jumps out at me is things that belong in a patient_dimension which I think are likely to be: person_id and gender. I will pull those distinct values out and I find that there are 32 distinct patients in the data. I modify the names of the columns to fit with the i2b2 naming scheme.
+
+```{r pt_dim}
+
+patient_dimension <- data %>% select(person_id, gender) %>% distinct(person_id, .keep_all = TRUE) %>% rename(c(patient_num = person_id, sex_cd = gender))
+
+DT::datatable(patient_dimension)
+```
+
+Now it looks like the provider dimension is the next clear table to from. 
+
+```{r provider_dim}
+
+provider_dimension <- data %>% 
+  select(provider_key, provider_name) %>% 
+  distinct(provider_key, .keep_all = TRUE) %>% 
+  rename(c(provider_id = provider_key, name_char = provider_name))
+
+DT::datatable(provider_dimension)
+```
+
+Next up is the like the concept dimension. From my reading it seems like CPT and Diagnosis are actually both what should be in the concept_cd. 
+
+```{r concept_dim}
+
+concept_dimension_cpt <- data %>% 
+  select(cpt_code, cpt_description) %>% 
+  distinct(cpt_code, .keep_all = TRUE) %>% 
+  rename(c(concept_cd = cpt_code, name_char = cpt_description))
+
+concept_dimension_dx <- data %>% 
+  select(dx1) %>% 
+  distinct() %>% 
+  rename(c(concept_cd = dx1))
+
+concept_dimension_cpt$concept_cd <- as.character(concept_dimension_cpt$concept_cd)
+
+concept_dimension <- bind_rows(concept_dimension_cpt, concept_dimension_dx)
+
+DT::datatable(concept_dimension)
+
+```
+
+
+Understanding what qualifies as a observation fact is harder than I expected. Looking at the data it seems logical to focus first on the concept_cd which seems like the best fit is from the diagnosis column AND the CPT column. I think I might need to link that information via the instance_num. In the sample data there is nothing that fits well with encounter number, so I am thinking I might have to generate that to help organize the data. 
+
+My thoughts are bit jumbled at how one might create a encounter number that is meaningful from this data. From looking at the i2b2 wiki it seems that an encounter number can span over dates (eg an inpatient stay over several days), so you could have one encounter number with multiple rows (beyond for just a complicated measurement like standing blood pressure)
+
+It is difficult to tell from the data in the spreadsheet how I might group these rows into encounters, so I am first going to group them by several columns to understand what I am working with. 
+
+```{r}
+
+encounter_exploration <- data %>% 
+  group_by(person_id, admit_date_time) %>%
+  mutate(instance_num = 1:n()) %>% 
+  ungroup() 
+  
+# encounter_exploration <- data %>% group_by(person_id, admit_date_time) %>% summarise(count = n()) %>% arrange(desc(person_id)) %>% DT::datatable()
+
+encounter_exploration %>% 
+  DT::datatable()
+```
+
+Exploring the data, it looks like people can have multiple QCC charges per rows with the same admit date time. I think the admit-date-time column is likely to be a good proxy to make an encounter number. I will assign rows an encounter number that is the same for the same person on the same admit date time. I think this could be the wrong way to do it as I am not sure how to tell if something is inpatient or outpatient (doubtful you would have burr holes done outpatient though.)
+
+```{r}
+encounter_creation <- encounter_exploration %>% 
+  mutate(encounter_num = group_indices(., person_id, admit_date_time))
+
+encounter_creation
+```
+Now I believe I can create the observation_fact table. 
+```{r}
+encounter_creation$cpt_code <- as.character(encounter_creation$cpt_code)
+
+observation_fact <- encounter_creation %>% 
+  # replace_na(dx1, "Unknown") %>% 
+  pivot_longer(cols = c(dx1, cpt_code), values_to = "concept_cd") %>% 
+  select(person_id, encounter_num, concept_cd, provider_key, qcc_charge_date_of_service, instance_num) %>% 
+  rename(c(start_date = qcc_charge_date_of_service, patient_num = person_id, provider_id = provider_key)) 
+```
+
+Finally, to stitch together the visit_dimension. 
+
+```{r}
+outpt_codes <- c(99203, 99204, 99212, 99214, 99242, 99243, 99244)
+
+visit_dimension <- encounter_creation %>% 
+  mutate(inout = case_when(
+    cpt_code %in% outpt_codes ~ 0, #0 for outpatient, 1 for inpatient
+    TRUE ~ 1)) %>% 
+  group_by(encounter_num) %>% 
+  select(encounter_num, admit_date_time, discharge_date_t_ime, inout) %>% 
+  distinct()
+```
+
+Looking at the data, it doesn't seem like I would need a modifier table with this sample data. 
+
+
+# Putting it back together
+
+Now I have all the expected tables (save for modifier table) and can bill up a SQL style data base from my dataframes.
+
+```{r}
+con_patient_db <- dbConnect(RSQLite::SQLite(), "example_star_scheme.db")
+dbWriteTable(con_patient_db, "patient_dimension", patient_dimension, overwrite = TRUE)
+dbWriteTable(con_patient_db, "concept_dimension", concept_dimension, overwrite = TRUE)
+dbWriteTable(con_patient_db, "provider_dimension", provider_dimension, overwrite = TRUE)
+#dbWriteTable(con_patient_db, "modifier_dimension", modifier_dimension, overwrite = TRUE)
+dbWriteTable(con_patient_db, "observation_fact", observation_fact, overwrite = TRUE)
+dbWriteTable(con_patient_db, "visit_dimension", visit_dimension, overwrite = TRUE)
+```
+
+## Test out the query
+
+```{r}
+dbGetQuery(con_patient_db, 
+           'Select distinct(patient_num)
+            From observation_fact
+            Where concept_cd IS NULL')
+```
+
+```{r}
+dbGetQuery(con_patient_db, 
+           'Select distinct(patient_num)
+            From observation_fact
+            Where concept_cd = 99214')
+```

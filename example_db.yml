@@ -1,0 +1,60 @@
+# data model segments
+
+# - segment: &meta Metadata
+
+
+# Tables and columns
+
+- table: observation_fact
+  columns:
+    patient_num: {key: yes, ref: patient_dimension}
+    encounter_num: {key: yes, ref: visit_dimension}
+    concept_cd: {key: yes, ref: concept_dimension}
+    provider_id: {key: yes, ref: provider_dimension}
+    start_date: {key: yes}
+    modifier_cd: {key: yes, ref: modifier_dimension}
+    instance_num: {key: yes}
+    end_date:
+    valtype_cd:
+    tval_char:
+    nval_num:
+    valueflag_cd:
+    units_cd:
+    observation_blob:
+
+- table: patient_dimension
+  columns:
+    patient_num: {key: yes}
+    birth_date:
+    death_date:
+    sex_cd:
+    race_cd:
+    ethnicity_cd:
+    zip_cd:
+
+- table: visit_dimension
+  columns:
+    encounter_num: {key: yes}
+    patient_numb: 
+    inout_cd: 
+    start_date:
+    end_date:
+
+- table: concept_dimension
+  columns:
+    concept_path: {key: yes}
+    concept_cd:
+    nam_char: 
+
+- table: provider_dimension
+  columns:
+    provider_path: {key: yes}
+    provider_id:
+    name_char:
+
+- table: modifier_dimension
+  columns:
+    modifier_path: {key: yes}
+    modifier_cd: 
+    name_char:
+
