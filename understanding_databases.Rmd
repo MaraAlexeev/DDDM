@@ -196,14 +196,14 @@ dbWriteTable(con_patient_db, "visit_dimension", visit_dimension, overwrite = TRU
 
 ```{r}
 dbGetQuery(con_patient_db, 
-           'Select distinct(patient_num)
-            From observation_fact
-            Where concept_cd IS NULL')
+           'SELECT DISTINCT(patient_num)
+            FROM observation_fact
+            WHERE concept_cd IS NULL')
 ```
 
 ```{r}
 dbGetQuery(con_patient_db, 
-           'Select encounter_num
-            From observation_fact
-            Where concept_cd = 99214')
+           'SELECT count(encounter_num)
+            FROM observation_fact
+            WHERE concept_cd = 99214')
 ```
